@@ -1,8 +1,7 @@
+import neo4j from "neo4j-driver";
 import { runQuery } from "../lib/neo4j.js";
-import { osClient } from "../lib/opensearch.js";
 import { config } from "../config/index.js";
 import type {
-  DocumentMeta,
   ChunkNeighbors,
   SimilarityPair,
   RelatedDocument,
@@ -14,68 +13,7 @@ import type {
 // ==================== WRITE OPERATIONS ====================
 
 /**
- * Create Document + Chunk nodes with HAS_CHUNK and NEXT_CHUNK relationships.
- */
-export async function createDocumentGraph(
-  meta: DocumentMeta,
-  chunkTexts: string[],
-): Promise<void> {
-  // 1. Create Document node
-  await runQuery(
-    `CREATE (d:Document {
-      documentId: $documentId, fileName: $fileName, fileType: $fileType,
-      fileSize: $fileSize, totalChunks: $totalChunks, ownerId: $ownerId,
-      embeddingProvider: $embeddingProvider, embeddingModel: $embeddingModel,
-      uploadedAt: $uploadedAt
-    })`,
-    {
-      documentId: meta.id,
-      fileName: meta.fileName,
-      fileType: meta.fileType,
-      fileSize: meta.fileSize,
-      totalChunks: meta.totalChunks,
-      ownerId: meta.ownerId,
-      embeddingProvider: meta.embeddingProvider,
-      embeddingModel: meta.embeddingModel,
-      uploadedAt: meta.uploadedAt,
-    },
-  );
-
-  // 2. Create Chunk nodes + HAS_CHUNK
-  const chunks = chunkTexts.map((text, i) => ({
-    chunkId: `${meta.id}_chunk_${i}`,
-    chunkIndex: i,
-    text,
-    fileName: meta.fileName,
-  }));
-
-  await runQuery(
-    `MATCH (d:Document {documentId: $documentId})
-     UNWIND $chunks AS chunk
-     CREATE (c:Chunk {
-       chunkId: chunk.chunkId, documentId: $documentId,
-       chunkIndex: chunk.chunkIndex, text: chunk.text, fileName: chunk.fileName
-     })
-     CREATE (d)-[:HAS_CHUNK {position: chunk.chunkIndex}]->(c)`,
-    { documentId: meta.id, chunks },
-  );
-
-  // 3. Create NEXT_CHUNK sequential links
-  if (chunkTexts.length > 1) {
-    await runQuery(
-      `MATCH (d:Document {documentId: $documentId})-[:HAS_CHUNK]->(c:Chunk)
-       WITH c ORDER BY c.chunkIndex
-       WITH collect(c) AS chunks
-       UNWIND range(0, size(chunks) - 2) AS i
-       WITH chunks[i] AS current, chunks[i + 1] AS next
-       CREATE (current)-[:NEXT_CHUNK]->(next)`,
-      { documentId: meta.id },
-    );
-  }
-}
-
-/**
- * Compute cross-document SIMILAR_TO edges using pre-computed vectors.
+ * Compute cross-document SIMILAR_TO edges using Neo4j vector index.
  */
 export async function computeCrossDocumentSimilarity(
   documentId: string,
@@ -90,32 +28,27 @@ export async function computeCrossDocumentSimilarity(
     const sourceChunkId = `${documentId}_chunk_${i}`;
 
     try {
-      const response = await osClient.search({
-        index: config.opensearch.index,
-        body: {
-          size: topK + 5,
-          query: {
-            bool: {
-              must: [{ knn: { embedding: { vector: vectors[i], k: topK + 5 } } }],
-              must_not: [{ term: { "metadata.documentId": documentId } }],
-            },
-          },
-        },
-      });
+      const results = await runQuery<{
+        chunkId: string;
+        docId: string;
+        chunkIndex: number;
+        score: number;
+      }>(
+        `CALL db.index.vector.queryNodes('chunk_embeddings', $topK, $vector)
+         YIELD node, score
+         WHERE node.documentId <> $documentId
+         RETURN node.chunkId AS chunkId, node.documentId AS docId,
+                node.chunkIndex AS chunkIndex, score
+         LIMIT $topK`,
+        { topK: neo4j.int(topK), vector: vectors[i], documentId },
+      );
 
-      const hits = (response.body.hits?.hits || []) as unknown as Array<{
-        _score: number;
-        _source: { metadata: { documentId: string; chunkIndex: number } };
-      }>;
-
-      for (const hit of hits.slice(0, topK)) {
-        if (hit._score < threshold) continue;
-        const targetDocId = hit._source.metadata.documentId;
-        const targetChunkIndex = hit._source.metadata.chunkIndex;
+      for (const r of results.slice(0, topK)) {
+        if (r.score < threshold) continue;
         pairs.push({
           sourceChunkId,
-          targetChunkId: `${targetDocId}_chunk_${targetChunkIndex}`,
-          score: hit._score,
+          targetChunkId: r.chunkId,
+          score: r.score,
         });
       }
     } catch (err) {
@@ -148,19 +81,7 @@ export async function computeDocumentRelationships(documentId: string): Promise<
      WHERE connectionCount >= $minConnections
      MERGE (d1)-[r:RELATED_TO]->(d2)
      SET r.score = avgScore, r.connectionCount = connectionCount`,
-    { documentId, minConnections },
-  );
-}
-
-/**
- * Delete all graph data for a document.
- */
-export async function deleteDocumentGraph(documentId: string): Promise<void> {
-  await runQuery(
-    `MATCH (d:Document {documentId: $documentId})
-     OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
-     DETACH DELETE c, d`,
-    { documentId },
+    { documentId, minConnections: neo4j.int(minConnections) },
   );
 }
 
@@ -207,7 +128,7 @@ export async function getSimilarChunksFromGraph(
             related.chunkIndex AS chunkIndex, s.score AS similarityScore
      ORDER BY s.score DESC
      LIMIT $limit`,
-    { chunkIds, limit },
+    { chunkIds, limit: neo4j.int(limit) },
   );
 }
 
@@ -235,7 +156,6 @@ export async function getDocumentGraph(documentId?: string): Promise<GraphData> 
   const nodeSet = new Set<string>();
 
   if (documentId) {
-    // Single document: doc + its chunks + related docs
     const results = await runQuery<{
       docId: string;
       docName: string;
@@ -284,7 +204,6 @@ export async function getDocumentGraph(documentId?: string): Promise<GraphData> 
       }
     }
   } else {
-    // Overview: all documents + RELATED_TO edges
     const results = await runQuery<{
       docId: string;
       docName: string;
@@ -341,7 +260,6 @@ export async function getChunkGraph(documentId: string): Promise<GraphData> {
   const edges: GraphEdge[] = [];
   const nodeSet = new Set<string>();
 
-  // Get chunks
   const chunks = await runQuery<{
     chunkId: string;
     chunkIndex: number;
@@ -365,7 +283,6 @@ export async function getChunkGraph(documentId: string): Promise<GraphData> {
     });
   }
 
-  // NEXT_CHUNK edges
   const nextLinks = await runQuery<{ from: string; to: string }>(
     `MATCH (d:Document {documentId: $documentId})-[:HAS_CHUNK]->(c:Chunk)-[:NEXT_CHUNK]->(n:Chunk)
      RETURN c.chunkId AS from, n.chunkId AS to`,
@@ -376,7 +293,6 @@ export async function getChunkGraph(documentId: string): Promise<GraphData> {
     edges.push({ source: link.from, target: link.to, type: "NEXT_CHUNK", properties: {} });
   }
 
-  // SIMILAR_TO edges (cross-document)
   const simLinks = await runQuery<{
     from: string;
     to: string;

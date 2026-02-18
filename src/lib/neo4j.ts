@@ -58,18 +58,51 @@ export async function runWriteTransaction<T>(
   }
 }
 
-export async function initNeo4j(): Promise<void> {
+export async function initNeo4j(embeddingDimension?: number): Promise<void> {
   const session = getSession();
   try {
+    // Constraints
     await session.run(
       "CREATE CONSTRAINT document_id IF NOT EXISTS FOR (d:Document) REQUIRE d.documentId IS UNIQUE",
     );
     await session.run(
       "CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (c:Chunk) REQUIRE c.chunkId IS UNIQUE",
     );
+
+    // Indexes
     await session.run(
       "CREATE INDEX chunk_document_id IF NOT EXISTS FOR (c:Chunk) ON (c.documentId)",
     );
+
+    // Vector index (dimension required)
+    if (embeddingDimension) {
+      try {
+        await session.run(
+          `CREATE VECTOR INDEX chunk_embeddings IF NOT EXISTS
+           FOR (c:Chunk) ON (c.embedding)
+           OPTIONS {indexConfig: {
+             \`vector.dimensions\`: $dim,
+             \`vector.similarity_function\`: 'cosine'
+           }}`,
+          { dim: neo4j.int(embeddingDimension) },
+        );
+        console.log(`Neo4j vector index ensured (dim=${embeddingDimension})`);
+      } catch (err) {
+        // Index may already exist with different dimension — log but don't fail
+        console.warn("Vector index creation skipped:", (err as Error).message);
+      }
+    }
+
+    // Full-text index for keyword search
+    try {
+      await session.run(
+        `CREATE FULLTEXT INDEX chunk_fulltext IF NOT EXISTS
+         FOR (c:Chunk) ON EACH [c.text]`,
+      );
+    } catch {
+      // May already exist
+    }
+
     console.log("Neo4j constraints and indexes ensured");
   } finally {
     await session.close();

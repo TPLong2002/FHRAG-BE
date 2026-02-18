@@ -1,10 +1,9 @@
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { Document } from "@langchain/core/documents";
-import { osClient } from "../lib/opensearch.js";
 import { createEmbeddings } from "../lib/embeddings.js";
 import { createLLM } from "../lib/llm.js";
-import { OpenSearchHybridRetriever } from "../lib/hybrid-retriever.js";
+import { Neo4jHybridRetriever } from "../lib/neo4j-retriever.js";
 import { getNeighborChunks, getSimilarChunksFromGraph } from "./graph.service.js";
 import { config } from "../config/index.js";
 import type { ChatRequest, ChatSource, EmbeddingProvider } from "../types/index.js";
@@ -23,7 +22,6 @@ const prompt = ChatPromptTemplate.fromMessages([
 
 /**
  * Enhance retrieved docs with graph context (neighbors + cross-doc similar).
- * Gracefully falls back to original docs if Neo4j is unavailable.
  */
 async function enhanceWithGraphContext(docs: Document[]): Promise<Document[]> {
   try {
@@ -82,7 +80,7 @@ async function enhanceWithGraphContext(docs: Document[]): Promise<Document[]> {
 
     return [...docs, ...additional];
   } catch (err) {
-    console.error("Graph enhancement failed, using OpenSearch results only:", err);
+    console.error("Graph enhancement failed:", err);
     return docs;
   }
 }
@@ -97,12 +95,9 @@ export async function chatWithSources(req: ChatRequest): Promise<{
   );
   const llm = createLLM(req.provider, req.model);
 
-  const retriever = new OpenSearchHybridRetriever({
-    client: osClient,
+  const retriever = new Neo4jHybridRetriever({
     embeddings,
-    indexName: config.opensearch.index,
     k: 4,
-    pipeline: config.opensearch.pipelineName,
     documentIds: req.documentIds,
     userId: req.userId,
   });
@@ -142,19 +137,15 @@ export async function chatStream(
   );
   const llm = createLLM(req.provider, req.model);
 
-  const retriever = new OpenSearchHybridRetriever({
-    client: osClient,
+  const retriever = new Neo4jHybridRetriever({
     embeddings,
-    indexName: config.opensearch.index,
-    k: 10,
-    pipeline: config.opensearch.pipelineName,
+    k: 4,
     documentIds: req.documentIds,
     userId: req.userId,
   });
 
   const docs = await retriever.invoke(req.question);
   const enhancedDocs = await enhanceWithGraphContext(docs);
-  console.log("🚀 ~ chatStream ~ enhancedDocs:", enhancedDocs)
 
   const context = enhancedDocs
     .map((d, i) => {

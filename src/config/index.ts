@@ -3,15 +3,6 @@ import "dotenv/config";
 export const config = {
   port: parseInt(process.env.PORT || "3001"),
 
-  opensearch: {
-    url: process.env.OPENSEARCH_URL || "https://localhost:9200",
-    username: process.env.OPENSEARCH_USERNAME || "admin",
-    password: process.env.OPENSEARCH_PASSWORD || "StrongPassword123!",
-    index: process.env.OPENSEARCH_INDEX || "rag_documents",
-    metaIndex: process.env.OPENSEARCH_META_INDEX || "rag_documents_meta",
-    pipelineName: "hybrid-search-pipeline",
-  },
-
   apiKeys: {
     openai: process.env.OPENAI_API_KEY || "",
     google: process.env.GOOGLE_API_KEY || "",
@@ -32,6 +23,12 @@ export const config = {
     username: process.env.NEO4J_USERNAME || "neo4j",
     password: process.env.NEO4J_PASSWORD || "neo4j_password",
     database: process.env.NEO4J_DATABASE || "neo4j",
+  },
+
+  search: {
+    topK: parseInt(process.env.SEARCH_TOP_K || "5"),
+    vectorWeight: parseFloat(process.env.SEARCH_VECTOR_WEIGHT || "0.7"),
+    fulltextWeight: parseFloat(process.env.SEARCH_FULLTEXT_WEIGHT || "0.3"),
   },
 
   graph: {

@@ -1,17 +1,14 @@
 import { v4 as uuidv4 } from "uuid";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { osClient } from "../lib/opensearch.js";
 import { createEmbeddings, getEmbeddingDimension } from "../lib/embeddings.js";
-import { initOpenSearch } from "../lib/opensearch.js";
+import { runQuery, initNeo4j } from "../lib/neo4j.js";
 import { config } from "../config/index.js";
 import { parseFile } from "./file-parser.service.js";
 import {
-  createDocumentGraph,
   computeCrossDocumentSimilarity,
   computeDocumentRelationships,
-  deleteDocumentGraph,
 } from "./graph.service.js";
-import type { DocumentMeta, UploadOptions, AccessControl, EmbeddingProvider } from "../types/index.js";
+import type { DocumentMeta, UploadOptions, AccessControl } from "../types/index.js";
 
 const splitter = new RecursiveCharacterTextSplitter({
   chunkSize: config.chunking.chunkSize,
@@ -23,13 +20,13 @@ export async function uploadDocument(
   originalName: string,
   mimeType: string,
   fileSize: number,
-  options: UploadOptions
+  options: UploadOptions,
 ): Promise<DocumentMeta> {
   const { embeddingProvider, embeddingModel, ownerId = "system" } = options;
 
-  // Ensure index exists with correct dimensions
+  // Ensure Neo4j indexes exist with correct dimensions
   const dimension = getEmbeddingDimension(embeddingModel);
-  await initOpenSearch(dimension);
+  await initNeo4j(dimension);
 
   // Parse file -> Document[] with page metadata
   const { docs: parsedDocs, fileType } = await parseFile(filePath, mimeType);
@@ -66,103 +63,193 @@ export async function uploadDocument(
     uploadedAt: new Date().toISOString(),
   };
 
-  // Store document metadata
-  await osClient.index({
-    index: config.opensearch.metaIndex,
-    id: documentId,
-    body: meta,
-    refresh: "true",
-  });
+  // Create Document node
+  await runQuery(
+    `CREATE (d:Document {
+      documentId: $documentId, fileName: $fileName, fileType: $fileType,
+      fileSize: $fileSize, totalChunks: $totalChunks, ownerId: $ownerId,
+      accessControl: $accessControl,
+      embeddingProvider: $embeddingProvider, embeddingModel: $embeddingModel,
+      uploadedAt: $uploadedAt
+    })`,
+    {
+      documentId,
+      fileName: originalName,
+      fileType,
+      fileSize,
+      totalChunks: chunks.length,
+      ownerId,
+      accessControl: JSON.stringify(accessControl),
+      embeddingProvider,
+      embeddingModel,
+      uploadedAt: meta.uploadedAt,
+    },
+  );
 
-  // Store chunks with embeddings (bulk)
-  const bulkBody: unknown[] = [];
-  for (let i = 0; i < chunks.length; i++) {
-    bulkBody.push({ index: { _index: config.opensearch.index } });
-    bulkBody.push({
-      text: chunks[i],
-      embedding: vectors[i],
-      metadata: {
-        documentId,
-        fileName: originalName,
-        fileType,
-        chunkIndex: i,
-        ownerId,
-        accessControl,
-      },
-    });
+  // Create Chunk nodes with embeddings + HAS_CHUNK relationships
+  const chunkData = chunks.map((text, i) => ({
+    chunkId: `${documentId}_chunk_${i}`,
+    chunkIndex: i,
+    text,
+    embedding: vectors[i],
+    fileName: originalName,
+    fileType,
+    ownerId,
+    accessControlPublic: accessControl.public,
+    allowedUsers: accessControl.allowedUsers,
+  }));
+
+  // Batch create in groups to avoid huge transactions
+  const batchSize = 50;
+  for (let start = 0; start < chunkData.length; start += batchSize) {
+    const batch = chunkData.slice(start, start + batchSize);
+    await runQuery(
+      `MATCH (d:Document {documentId: $documentId})
+       UNWIND $chunks AS chunk
+       CREATE (c:Chunk {
+         chunkId: chunk.chunkId, documentId: $documentId,
+         chunkIndex: chunk.chunkIndex, text: chunk.text,
+         embedding: chunk.embedding,
+         fileName: chunk.fileName, fileType: chunk.fileType,
+         ownerId: chunk.ownerId,
+         accessControlPublic: chunk.accessControlPublic,
+         allowedUsers: chunk.allowedUsers
+       })
+       CREATE (d)-[:HAS_CHUNK {position: chunk.chunkIndex}]->(c)`,
+      { documentId, chunks: batch },
+    );
   }
 
-  const bulkResult = await osClient.bulk({ body: bulkBody, refresh: "true" } as any);
-  if (bulkResult.body.errors) {
-    console.error("Bulk indexing had errors:", JSON.stringify(bulkResult.body.items.slice(0, 3)));
+  // Create NEXT_CHUNK sequential links
+  if (chunks.length > 1) {
+    await runQuery(
+      `MATCH (d:Document {documentId: $documentId})-[:HAS_CHUNK]->(c:Chunk)
+       WITH c ORDER BY c.chunkIndex
+       WITH collect(c) AS chunks
+       UNWIND range(0, size(chunks) - 2) AS i
+       WITH chunks[i] AS current, chunks[i + 1] AS next
+       CREATE (current)-[:NEXT_CHUNK]->(next)`,
+      { documentId },
+    );
   }
 
-  // Create graph nodes in Neo4j
+  // Compute cross-document similarity + relationships (non-blocking)
   try {
-    await createDocumentGraph(meta, chunks);
-    // Compute cross-document similarity (uses pre-computed vectors)
     await computeCrossDocumentSimilarity(documentId, chunks, vectors);
     await computeDocumentRelationships(documentId);
   } catch (err) {
-    console.error("Graph creation error (non-blocking):", err);
+    console.error("Graph similarity error (non-blocking):", err);
   }
 
   return meta;
 }
 
 export async function listDocuments(userId?: string): Promise<DocumentMeta[]> {
-  const query: Record<string, unknown> = userId
-    ? {
-        bool: {
-          should: [
-            { term: { "accessControl.public": true } },
-            { term: { "accessControl.allowedUsers": userId } },
-            { term: { ownerId: userId } },
-          ],
-          minimum_should_match: 1,
-        },
-      }
-    : { match_all: {} };
+  let cypher: string;
+  const params: Record<string, unknown> = {};
 
-  const result = await osClient.search({
-    index: config.opensearch.metaIndex,
-    body: { query, size: 1000, sort: [{ uploadedAt: "desc" }] },
+  const returnFields = `RETURN d.documentId AS documentId, d.fileName AS fileName,
+    d.fileType AS fileType, d.fileSize AS fileSize, d.totalChunks AS totalChunks,
+    d.ownerId AS ownerId, d.accessControl AS accessControl,
+    d.embeddingProvider AS embeddingProvider, d.embeddingModel AS embeddingModel,
+    d.uploadedAt AS uploadedAt`;
+
+  if (userId) {
+    cypher = `MATCH (d:Document)
+      WHERE d.ownerId = $userId
+        OR d.accessControl CONTAINS '"public":true'
+      ${returnFields} ORDER BY d.uploadedAt DESC LIMIT 1000`;
+    params.userId = userId;
+  } else {
+    cypher = `MATCH (d:Document) ${returnFields} ORDER BY d.uploadedAt DESC LIMIT 1000`;
+  }
+
+  const results = await runQuery<{
+    documentId: string;
+    fileName: string;
+    fileType: string;
+    fileSize: number;
+    totalChunks: number;
+    ownerId: string;
+    accessControl: string;
+    embeddingProvider: string;
+    embeddingModel: string;
+    uploadedAt: string;
+  }>(cypher, params);
+
+  return results.map((d) => {
+    let ac: AccessControl;
+    try {
+      ac = JSON.parse(d.accessControl);
+    } catch {
+      ac = { public: true, allowedUsers: [], allowedGroups: [] };
+    }
+    return {
+      id: d.documentId,
+      fileName: d.fileName,
+      fileType: d.fileType,
+      fileSize: d.fileSize,
+      totalChunks: d.totalChunks,
+      ownerId: d.ownerId,
+      accessControl: ac,
+      embeddingProvider: d.embeddingProvider,
+      embeddingModel: d.embeddingModel,
+      uploadedAt: d.uploadedAt,
+    } as DocumentMeta;
   });
-
-  return result.body.hits.hits.map((hit: Record<string, unknown>) => ({
-    ...(hit._source as DocumentMeta),
-    id: hit._id as string,
-  }));
 }
 
 export async function deleteDocument(documentId: string): Promise<void> {
-  // Delete all chunks belonging to this document
-  await osClient.deleteByQuery({
-    index: config.opensearch.index,
-    body: { query: { term: { "metadata.documentId": documentId } } },
-    refresh: true,
-  });
-
-  // Delete metadata
-  await osClient.delete({
-    index: config.opensearch.metaIndex,
-    id: documentId,
-    refresh: "true",
-  });
-
-  // Delete graph nodes
-  try {
-    await deleteDocumentGraph(documentId);
-  } catch (err) {
-    console.error("Graph deletion error (non-blocking):", err);
-  }
+  await runQuery(
+    `MATCH (d:Document {documentId: $documentId})
+     OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
+     DETACH DELETE c, d`,
+    { documentId },
+  );
 }
 
 export async function getDocument(documentId: string): Promise<DocumentMeta | null> {
+  const results = await runQuery<{
+    documentId: string;
+    fileName: string;
+    fileType: string;
+    fileSize: number;
+    totalChunks: number;
+    ownerId: string;
+    accessControl: string;
+    embeddingProvider: string;
+    embeddingModel: string;
+    uploadedAt: string;
+  }>(
+    `MATCH (d:Document {documentId: $documentId})
+     RETURN d.documentId AS documentId, d.fileName AS fileName,
+            d.fileType AS fileType, d.fileSize AS fileSize, d.totalChunks AS totalChunks,
+            d.ownerId AS ownerId, d.accessControl AS accessControl,
+            d.embeddingProvider AS embeddingProvider, d.embeddingModel AS embeddingModel,
+            d.uploadedAt AS uploadedAt`,
+    { documentId },
+  );
+
+  if (!results.length) return null;
+
+  const d = results[0];
+  let ac: AccessControl;
   try {
-    const result = await osClient.get({ index: config.opensearch.metaIndex, id: documentId });
-    return { ...(result.body._source as DocumentMeta), id: result.body._id as string };
+    ac = JSON.parse(d.accessControl);
   } catch {
-    return null;
+    ac = { public: true, allowedUsers: [], allowedGroups: [] };
   }
+
+  return {
+    id: d.documentId,
+    fileName: d.fileName,
+    fileType: d.fileType,
+    fileSize: d.fileSize,
+    totalChunks: d.totalChunks,
+    ownerId: d.ownerId,
+    accessControl: ac,
+    embeddingProvider: d.embeddingProvider,
+    embeddingModel: d.embeddingModel,
+    uploadedAt: d.uploadedAt,
+  } as DocumentMeta;
 }
