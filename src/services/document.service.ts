@@ -5,6 +5,12 @@ import { createEmbeddings, getEmbeddingDimension } from "../lib/embeddings.js";
 import { initOpenSearch } from "../lib/opensearch.js";
 import { config } from "../config/index.js";
 import { parseFile } from "./file-parser.service.js";
+import {
+  createDocumentGraph,
+  computeCrossDocumentSimilarity,
+  computeDocumentRelationships,
+  deleteDocumentGraph,
+} from "./graph.service.js";
 import type { DocumentMeta, UploadOptions, AccessControl, EmbeddingProvider } from "../types/index.js";
 
 const splitter = new RecursiveCharacterTextSplitter({
@@ -86,9 +92,19 @@ export async function uploadDocument(
     });
   }
 
-  const bulkResult = await osClient.bulk({ body: bulkBody, refresh: "true" });
+  const bulkResult = await osClient.bulk({ body: bulkBody, refresh: "true" } as any);
   if (bulkResult.body.errors) {
     console.error("Bulk indexing had errors:", JSON.stringify(bulkResult.body.items.slice(0, 3)));
+  }
+
+  // Create graph nodes in Neo4j
+  try {
+    await createDocumentGraph(meta, chunks);
+    // Compute cross-document similarity (uses pre-computed vectors)
+    await computeCrossDocumentSimilarity(documentId, chunks, vectors);
+    await computeDocumentRelationships(documentId);
+  } catch (err) {
+    console.error("Graph creation error (non-blocking):", err);
   }
 
   return meta;
@@ -133,6 +149,13 @@ export async function deleteDocument(documentId: string): Promise<void> {
     id: documentId,
     refresh: "true",
   });
+
+  // Delete graph nodes
+  try {
+    await deleteDocumentGraph(documentId);
+  } catch (err) {
+    console.error("Graph deletion error (non-blocking):", err);
+  }
 }
 
 export async function getDocument(documentId: string): Promise<DocumentMeta | null> {

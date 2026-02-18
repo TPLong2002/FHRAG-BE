@@ -27,6 +27,19 @@ export const config = {
     chunkOverlap: parseInt(process.env.CHUNK_OVERLAP || "200"),
   },
 
+  neo4j: {
+    uri: process.env.NEO4J_URI || "bolt://localhost:7687",
+    username: process.env.NEO4J_USERNAME || "neo4j",
+    password: process.env.NEO4J_PASSWORD || "neo4j_password",
+    database: process.env.NEO4J_DATABASE || "neo4j",
+  },
+
+  graph: {
+    similarityThreshold: parseFloat(process.env.GRAPH_SIMILARITY_THRESHOLD || "0.8"),
+    similarityTopK: parseInt(process.env.GRAPH_SIMILARITY_TOP_K || "5"),
+    minRelatedConnections: parseInt(process.env.GRAPH_MIN_RELATED_CONNECTIONS || "2"),
+  },
+
   embeddingDimensions: {
     "text-embedding-3-small": 1536,
     "text-embedding-3-large": 3072,

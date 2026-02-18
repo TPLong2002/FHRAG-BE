@@ -56,3 +56,47 @@ export interface UploadOptions {
   embeddingModel: string;
   ownerId?: string;
 }
+
+// --- Graph Types ---
+
+export interface SimilarityPair {
+  sourceChunkId: string;
+  targetChunkId: string;
+  score: number;
+}
+
+export interface ChunkNeighbors {
+  chunkId: string;
+  prevChunkId: string | null;
+  prevText: string | null;
+  prevIndex: number | null;
+  nextChunkId: string | null;
+  nextText: string | null;
+  nextIndex: number | null;
+}
+
+export interface RelatedDocument {
+  documentId: string;
+  fileName: string;
+  score: number;
+  connectionCount: number;
+}
+
+export interface GraphNode {
+  id: string;
+  label: string;
+  type: "document" | "chunk";
+  properties: Record<string, unknown>;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  type: string;
+  properties: Record<string, unknown>;
+}
+
+export interface GraphData {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
