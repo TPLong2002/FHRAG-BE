@@ -43,7 +43,9 @@ router.post("/upload", upload.array("files", 10), async (req, res) => {
 
     const results = [];
     for (const file of files) {
-      const meta = await uploadDocument(file.path, file.originalname, file.mimetype, file.size, {
+      // Multer decodes filename as latin1 — re-encode to get correct UTF-8
+      const fileName = Buffer.from(file.originalname, "latin1").toString("utf8");
+      const meta = await uploadDocument(file.path, fileName, file.mimetype, file.size, {
         embeddingProvider,
         embeddingModel,
         ownerId: userId,

@@ -8,9 +8,15 @@ import { getNeighborChunks, getSimilarChunksFromGraph } from "./graph.service.js
 import { config } from "../config/index.js";
 import type { ChatRequest, ChatSource, EmbeddingProvider } from "../types/index.js";
 
-const SYSTEM_PROMPT = `You are a helpful assistant. Answer the question based on the provided context.
-If the context doesn't contain relevant information, say so honestly.
-Always cite which document the information comes from when possible.
+const SYSTEM_PROMPT = `You are a knowledgeable assistant specialized in answering questions based on provided documents.
+
+Instructions:
+- Answer ONLY based on the provided context. Do not make up information.
+- If the context doesn't contain enough information, say so clearly.
+- When information comes from multiple documents, synthesize the answer and cite each source.
+- Reference sources by their document name, e.g. "(from filename.pdf)".
+- For technical/database questions, be precise with table names, column names, relationships, and data types.
+- If context chunks are labeled [neighbor] or [similar], they provide additional related context.
 
 Context:
 {context}`;
@@ -19,6 +25,24 @@ const prompt = ChatPromptTemplate.fromMessages([
   ["system", SYSTEM_PROMPT],
   ["human", "{question}"],
 ]);
+
+/**
+ * Build context string from docs, sorted by document then chunk index for coherence.
+ */
+function buildContext(docs: Document[]): string {
+  const sorted = [...docs].sort((a, b) => {
+    const docCmp = String(a.metadata.documentId).localeCompare(String(b.metadata.documentId));
+    if (docCmp !== 0) return docCmp;
+    return (a.metadata.chunkIndex as number) - (b.metadata.chunkIndex as number);
+  });
+
+  return sorted
+    .map((d, i) => {
+      const tag = d.metadata._graphSource ? ` [${d.metadata._graphSource}]` : "";
+      return `[${i + 1}] (${d.metadata.fileName || "unknown"})${tag} ${d.pageContent}`;
+    })
+    .join("\n\n");
+}
 
 /**
  * Enhance retrieved docs with graph context (neighbors + cross-doc similar).
@@ -97,7 +121,7 @@ export async function chatWithSources(req: ChatRequest): Promise<{
 
   const retriever = new Neo4jHybridRetriever({
     embeddings,
-    k: 4,
+    k: config.search.topK,
     documentIds: req.documentIds,
     userId: req.userId,
   });
@@ -105,12 +129,7 @@ export async function chatWithSources(req: ChatRequest): Promise<{
   const docs = await retriever.invoke(req.question);
   const enhancedDocs = await enhanceWithGraphContext(docs);
 
-  const context = enhancedDocs
-    .map((d, i) => {
-      const tag = d.metadata._graphSource ? ` [${d.metadata._graphSource}]` : "";
-      return `[${i + 1}] (${d.metadata.fileName || "unknown"})${tag} ${d.pageContent}`;
-    })
-    .join("\n\n");
+  const context = buildContext(enhancedDocs);
 
   const chain = prompt.pipe(llm).pipe(new StringOutputParser());
   const answer = await chain.invoke({ context, question: req.question });
@@ -139,7 +158,7 @@ export async function chatStream(
 
   const retriever = new Neo4jHybridRetriever({
     embeddings,
-    k: 4,
+    k: config.search.topK,
     documentIds: req.documentIds,
     userId: req.userId,
   });
@@ -147,12 +166,7 @@ export async function chatStream(
   const docs = await retriever.invoke(req.question);
   const enhancedDocs = await enhanceWithGraphContext(docs);
 
-  const context = enhancedDocs
-    .map((d, i) => {
-      const tag = d.metadata._graphSource ? ` [${d.metadata._graphSource}]` : "";
-      return `[${i + 1}] (${d.metadata.fileName || "unknown"})${tag} ${d.pageContent}`;
-    })
-    .join("\n\n");
+  const context = buildContext(enhancedDocs);
 
   const chain = prompt.pipe(llm).pipe(new StringOutputParser());
   const stream = await chain.stream({ context, question: req.question });
