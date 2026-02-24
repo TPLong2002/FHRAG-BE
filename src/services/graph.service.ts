@@ -137,7 +137,6 @@ export async function getSimilarChunksFromGraph(
  * Returns table definitions + FK relationships as structured text for LLM context.
  */
 export async function getTableContextForChunks(chunkIds: string[]): Promise<string> {
-  console.log("🚀 ~ getTableContextForChunks ~ chunkIds:", chunkIds)
   if (!chunkIds.length) return "";
 
   // Find tables mentioned by these chunks + their FK-connected tables
@@ -557,4 +556,24 @@ export async function getSchemaGraph(documentId?: string): Promise<GraphData> {
   });
 
   return { nodes, edges: uniqueEdges };
+}
+
+export async function deleteTable(tableName: string): Promise<void> {
+  await runQuery(
+    `MATCH (t:Table {name: $name}) DETACH DELETE t`,
+    { name: tableName },
+  );
+}
+
+export async function deleteForeignKey(
+  fromTable: string,
+  toTable: string,
+  fromColumn: string,
+  toColumn: string,
+): Promise<void> {
+  await runQuery(
+    `MATCH (from:Table {name: $fromTable})-[fk:FOREIGN_KEY {fromColumn: $fromColumn, toColumn: $toColumn}]->(to:Table {name: $toTable})
+     DELETE fk`,
+    { fromTable, toTable, fromColumn, toColumn },
+  );
 }

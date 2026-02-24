@@ -10,9 +10,9 @@ import type { ChatRequest, ChatSource, EmbeddingProvider } from "../types/index.
 
 const SYSTEM_PROMPT = `You are a knowledgeable assistant specialized in answering questions based on provided documents.
 
-Instructions:
+STRICT Instructions:
 - Answer ONLY based on the provided context. Do not make up information.
-- Keep your answers short and concise.
+- **Keep your answers short and concise**.
 - If the context doesn't contain enough information, say so clearly.
 - When information comes from multiple documents, synthesize the answer and cite each source.
 - Reference sources by their document name, e.g. "(from filename.pdf)".
@@ -122,7 +122,6 @@ async function enhanceWithGraphContext(docs: Document[]): Promise<Document[]> {
 
     // 3. Table schema context (via MENTIONS_TABLE)
     const tableContext = await getTableContextForChunks(chunkIds);
-    console.log("🚀 ~ enhanceWithGraphContext ~ tableContext:", tableContext)
     if (tableContext) {
       additional.push(
         new Document({
@@ -191,7 +190,6 @@ export async function chatStream(
   const enhancedDocs = await enhanceWithGraphContext(docs);
 
   const context = buildContext(enhancedDocs);
-  console.log("🚀 ~ chatStream ~ context:", context)
 
   const chain = prompt.pipe(llm).pipe(new StringOutputParser());
   const stream = await chain.stream({ context, question: req.question });
