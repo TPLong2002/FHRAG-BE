@@ -213,13 +213,14 @@ export async function getTableContextForChunks(chunkIds: string[]): Promise<stri
 
     try {
       const cols = JSON.parse(t.columns) as Array<{
-        name: string; type: string; nullable: boolean; isPrimaryKey: boolean;
+        name: string; type: string; nullable: boolean; isPrimaryKey: boolean; description?: string;
       }>;
       lines.push("  Columns:");
       for (const col of cols) {
         const pk = col.isPrimaryKey ? " [PK]" : "";
         const nullable = col.nullable ? " NULL" : " NOT NULL";
-        lines.push(`    - ${col.name} ${col.type}${pk}${nullable}`);
+        const desc = col.description ? ` -- ${col.description}` : "";
+        lines.push(`    - ${col.name} ${col.type}${pk}${nullable}${desc}`);
       }
     } catch { /* skip */ }
   }
