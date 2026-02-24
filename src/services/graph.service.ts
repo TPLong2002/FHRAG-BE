@@ -132,6 +132,109 @@ export async function getSimilarChunksFromGraph(
   );
 }
 
+/**
+ * Get table schema context for chunks (via MENTIONS_TABLE relationships).
+ * Returns table definitions + FK relationships as structured text for LLM context.
+ */
+export async function getTableContextForChunks(chunkIds: string[]): Promise<string> {
+  console.log("🚀 ~ getTableContextForChunks ~ chunkIds:", chunkIds)
+  if (!chunkIds.length) return "";
+
+  // Find tables mentioned by these chunks + their FK-connected tables
+  const tables = await runQuery<{
+    name: string;
+    displayName: string;
+    description: string;
+    columns: string;
+  }>(
+    `UNWIND $chunkIds AS cid
+     MATCH (c:Chunk {chunkId: cid})-[:MENTIONS_TABLE]->(t:Table)
+     RETURN DISTINCT t.name AS name, t.displayName AS displayName,
+            t.description AS description, t.columns AS columns`,
+    { chunkIds },
+  );
+
+  if (!tables.length) return "";
+
+  const tableNames = tables.map((t) => t.name);
+
+  // Also fetch FK-connected tables not yet in the list
+  const fkTables = await runQuery<{
+    name: string;
+    displayName: string;
+    description: string;
+    columns: string;
+    fkFrom: string;
+    fkFromCol: string;
+    fkToCol: string;
+    direction: string;
+  }>(
+    `UNWIND $names AS tName
+     MATCH (t:Table {name: tName})-[fk:FOREIGN_KEY]->(other:Table)
+     WHERE NOT other.name IN $names
+     RETURN DISTINCT other.name AS name, other.displayName AS displayName,
+            other.description AS description, other.columns AS columns,
+            t.name AS fkFrom, fk.fromColumn AS fkFromCol, fk.toColumn AS fkToCol, 'out' AS direction
+     UNION
+     UNWIND $names AS tName
+     MATCH (other:Table)-[fk:FOREIGN_KEY]->(t:Table {name: tName})
+     WHERE NOT other.name IN $names
+     RETURN DISTINCT other.name AS name, other.displayName AS displayName,
+            other.description AS description, other.columns AS columns,
+            t.name AS fkFrom, fk.fromColumn AS fkFromCol, fk.toColumn AS fkToCol, 'in' AS direction`,
+    { names: tableNames },
+  );
+
+  // Get FK relationships between known tables
+  const allNames = [...new Set([...tableNames, ...fkTables.map((t) => t.name)])];
+  const fks = await runQuery<{
+    from: string;
+    to: string;
+    fromCol: string;
+    toCol: string;
+  }>(
+    `MATCH (t1:Table)-[fk:FOREIGN_KEY]->(t2:Table)
+     WHERE t1.name IN $names AND t2.name IN $names
+     RETURN t1.name AS from, t2.name AS to,
+            fk.fromColumn AS fromCol, fk.toColumn AS toCol`,
+    { names: allNames },
+  );
+
+  // Format as structured text
+  const allTables = [...tables, ...fkTables];
+  const seen = new Set<string>();
+  const lines: string[] = ["=== DATABASE SCHEMA CONTEXT ==="];
+
+  for (const t of allTables) {
+    if (seen.has(t.name)) continue;
+    seen.add(t.name);
+
+    lines.push(`\nTable: ${t.displayName}`);
+    if (t.description) lines.push(`  Description: ${t.description}`);
+
+    try {
+      const cols = JSON.parse(t.columns) as Array<{
+        name: string; type: string; nullable: boolean; isPrimaryKey: boolean;
+      }>;
+      lines.push("  Columns:");
+      for (const col of cols) {
+        const pk = col.isPrimaryKey ? " [PK]" : "";
+        const nullable = col.nullable ? " NULL" : " NOT NULL";
+        lines.push(`    - ${col.name} ${col.type}${pk}${nullable}`);
+      }
+    } catch { /* skip */ }
+  }
+
+  if (fks.length > 0) {
+    lines.push("\nForeign Key Relationships:");
+    for (const fk of fks) {
+      lines.push(`  ${fk.from}.${fk.fromCol} -> ${fk.to}.${fk.toCol}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 // ==================== READ OPERATIONS (API/Visualization) ====================
 
 /**
@@ -325,4 +428,133 @@ export async function getChunkGraph(documentId: string): Promise<GraphData> {
   }
 
   return { nodes, edges };
+}
+
+/**
+ * Get schema-level graph: Table nodes + FOREIGN_KEY edges.
+ */
+export async function getSchemaGraph(documentId?: string): Promise<GraphData> {
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  const nodeSet = new Set<string>();
+
+  if (documentId) {
+    const results = await runQuery<{
+      tableName: string;
+      displayName: string;
+      description: string;
+      columns: string;
+      relatedTable: string | null;
+      relatedDisplayName: string | null;
+      relatedDescription: string | null;
+      relatedColumns: string | null;
+      fkFromCol: string | null;
+      fkToCol: string | null;
+      fkDirection: string | null;
+    }>(
+      `MATCH (d:Document {documentId: $documentId})-[:HAS_TABLE]->(t:Table)
+       OPTIONAL MATCH (t)-[fk:FOREIGN_KEY]->(other:Table)
+       RETURN t.name AS tableName, t.displayName AS displayName,
+              t.description AS description, t.columns AS columns,
+              other.name AS relatedTable, other.displayName AS relatedDisplayName,
+              other.description AS relatedDescription, other.columns AS relatedColumns,
+              fk.fromColumn AS fkFromCol, fk.toColumn AS fkToCol, 'out' AS fkDirection
+       UNION
+       MATCH (d:Document {documentId: $documentId})-[:HAS_TABLE]->(t:Table)
+       OPTIONAL MATCH (other:Table)-[fk:FOREIGN_KEY]->(t)
+       WHERE other IS NOT NULL
+       RETURN t.name AS tableName, t.displayName AS displayName,
+              t.description AS description, t.columns AS columns,
+              other.name AS relatedTable, other.displayName AS relatedDisplayName,
+              other.description AS relatedDescription, other.columns AS relatedColumns,
+              fk.fromColumn AS fkFromCol, fk.toColumn AS fkToCol, 'in' AS fkDirection`,
+      { documentId },
+    );
+
+    for (const row of results) {
+      if (!nodeSet.has(row.tableName)) {
+        nodeSet.add(row.tableName);
+        nodes.push({
+          id: row.tableName,
+          label: row.displayName,
+          type: "table",
+          properties: { description: row.description, columns: row.columns },
+        });
+      }
+      if (row.relatedTable && !nodeSet.has(row.relatedTable)) {
+        nodeSet.add(row.relatedTable);
+        nodes.push({
+          id: row.relatedTable,
+          label: row.relatedDisplayName!,
+          type: "table",
+          properties: { description: row.relatedDescription, columns: row.relatedColumns },
+        });
+      }
+      if (row.relatedTable && row.fkFromCol) {
+        const source = row.fkDirection === "out" ? row.tableName : row.relatedTable;
+        const target = row.fkDirection === "out" ? row.relatedTable : row.tableName;
+        edges.push({
+          source,
+          target,
+          type: "FOREIGN_KEY",
+          properties: { fromColumn: row.fkFromCol, toColumn: row.fkToCol },
+        });
+      }
+    }
+  } else {
+    const tables = await runQuery<{
+      name: string;
+      displayName: string;
+      description: string;
+      columns: string;
+    }>(
+      `MATCH (t:Table)
+       RETURN t.name AS name, t.displayName AS displayName,
+              t.description AS description, t.columns AS columns
+       LIMIT 200`,
+    );
+
+    for (const t of tables) {
+      nodeSet.add(t.name);
+      nodes.push({
+        id: t.name,
+        label: t.displayName,
+        type: "table",
+        properties: { description: t.description, columns: t.columns },
+      });
+    }
+
+    const fks = await runQuery<{
+      from: string;
+      to: string;
+      fromCol: string;
+      toCol: string;
+    }>(
+      `MATCH (t1:Table)-[fk:FOREIGN_KEY]->(t2:Table)
+       WHERE t1.name IN $names AND t2.name IN $names
+       RETURN t1.name AS from, t2.name AS to,
+              fk.fromColumn AS fromCol, fk.toColumn AS toCol`,
+      { names: [...nodeSet] },
+    );
+
+    for (const fk of fks) {
+      edges.push({
+        source: fk.from,
+        target: fk.to,
+        type: "FOREIGN_KEY",
+        properties: { fromColumn: fk.fromCol, toColumn: fk.toCol },
+      });
+    }
+  }
+
+  // Deduplicate edges
+  const edgeSet = new Set<string>();
+  const uniqueEdges = edges.filter((e) => {
+    const key = `${e.source}->${e.target}:${e.properties.fromColumn}->${e.properties.toColumn}`;
+    if (edgeSet.has(key)) return false;
+    edgeSet.add(key);
+    return true;
+  });
+
+  return { nodes, edges: uniqueEdges };
 }

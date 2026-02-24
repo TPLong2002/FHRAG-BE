@@ -3,6 +3,7 @@ import {
   getRelatedDocuments,
   getDocumentGraph,
   getChunkGraph,
+  getSchemaGraph,
 } from "../services/graph.service.js";
 
 const router = Router();
@@ -41,6 +42,17 @@ router.get("/documents/:id/related", async (req, res) => {
 router.get("/documents/:id/chunks", async (req, res) => {
   try {
     const graph = await getChunkGraph(req.params.id);
+    res.json(graph);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+/** Get schema graph (tables + foreign keys) */
+router.get("/schema", async (req, res) => {
+  try {
+    const documentId = req.query.documentId as string | undefined;
+    const graph = await getSchemaGraph(documentId);
     res.json(graph);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });

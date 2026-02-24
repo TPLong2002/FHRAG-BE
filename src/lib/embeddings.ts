@@ -28,12 +28,13 @@ export function getEmbeddingDimension(model: string): number {
 /** Available embedding models per provider */
 export const EMBEDDING_MODELS: Record<EmbeddingProvider, { id: string; name: string }[]> = {
   openai: [
-    { id: "text-embedding-3-small", name: "Text Embedding 3 Small (1536d)" },
     { id: "text-embedding-3-large", name: "Text Embedding 3 Large (3072d)" },
+    { id: "text-embedding-3-small", name: "Text Embedding 3 Small (1536d)" },
     { id: "text-embedding-ada-002", name: "Ada 002 (1536d)" },
   ],
   google: [
     { id: "text-embedding-004", name: "Text Embedding 004 (768d)" },
     { id: "embedding-001", name: "Embedding 001 (768d)" },
+    { id: "gemini-embedding-001", name: "Gemini Embedding 001 (3072d)" },
   ],
 };

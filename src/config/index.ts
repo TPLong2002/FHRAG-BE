@@ -43,5 +43,6 @@ export const config = {
     "text-embedding-ada-002": 1536,
     "text-embedding-004": 768,
     "embedding-001": 768,
+    "gemini-embedding-001": 3072,
   } as Record<string, number>,
 } as const;

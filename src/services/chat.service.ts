@@ -4,7 +4,7 @@ import { Document } from "@langchain/core/documents";
 import { createEmbeddings } from "../lib/embeddings.js";
 import { createLLM } from "../lib/llm.js";
 import { Neo4jHybridRetriever } from "../lib/neo4j-retriever.js";
-import { getNeighborChunks, getSimilarChunksFromGraph } from "./graph.service.js";
+import { getNeighborChunks, getSimilarChunksFromGraph, getTableContextForChunks } from "./graph.service.js";
 import { config } from "../config/index.js";
 import type { ChatRequest, ChatSource, EmbeddingProvider } from "../types/index.js";
 
@@ -12,11 +12,13 @@ const SYSTEM_PROMPT = `You are a knowledgeable assistant specialized in answerin
 
 Instructions:
 - Answer ONLY based on the provided context. Do not make up information.
+- Keep your answers short and concise.
 - If the context doesn't contain enough information, say so clearly.
 - When information comes from multiple documents, synthesize the answer and cite each source.
 - Reference sources by their document name, e.g. "(from filename.pdf)".
 - For technical/database questions, be precise with table names, column names, relationships, and data types.
 - If context chunks are labeled [neighbor] or [similar], they provide additional related context.
+- If a [schema] section is provided, it contains extracted database table definitions (columns, types, primary keys, foreign keys). Use this structured schema to give precise answers about table design, relationships, and data modeling.
 
 Context:
 {context}`;
@@ -42,6 +44,22 @@ function buildContext(docs: Document[]): string {
       return `[${i + 1}] (${d.metadata.fileName || "unknown"})${tag} ${d.pageContent}`;
     })
     .join("\n\n");
+}
+
+/**
+ * Build sources from all docs (retriever + enhanced).
+ */
+function buildSources(docs: Document[]): ChatSource[] {
+  return docs.map((d) => ({
+    documentId: d.metadata.documentId as string,
+    fileName: d.metadata._graphSource === "schema"
+      ? "Database Schema"
+      : (d.metadata.fileName as string) || "unknown",
+    chunkIndex: d.metadata.chunkIndex as number,
+    content: d.pageContent,
+    score: (d.metadata._score as number) ?? 0,
+    graphSource: (d.metadata._graphSource as string) || undefined,
+  }));
 }
 
 /**
@@ -102,6 +120,18 @@ async function enhanceWithGraphContext(docs: Document[]): Promise<Document[]> {
       }
     }
 
+    // 3. Table schema context (via MENTIONS_TABLE)
+    const tableContext = await getTableContextForChunks(chunkIds);
+    console.log("🚀 ~ enhanceWithGraphContext ~ tableContext:", tableContext)
+    if (tableContext) {
+      additional.push(
+        new Document({
+          pageContent: tableContext,
+          metadata: { _graphSource: "schema", documentId: "schema", chunkIndex: -1 },
+        }),
+      );
+    }
+
     return [...docs, ...additional];
   } catch (err) {
     console.error("Graph enhancement failed:", err);
@@ -134,13 +164,7 @@ export async function chatWithSources(req: ChatRequest): Promise<{
   const chain = prompt.pipe(llm).pipe(new StringOutputParser());
   const answer = await chain.invoke({ context, question: req.question });
 
-  const sources: ChatSource[] = docs.map((d) => ({
-    documentId: d.metadata.documentId as string,
-    fileName: d.metadata.fileName as string,
-    chunkIndex: d.metadata.chunkIndex as number,
-    content: d.pageContent,
-    score: d.metadata._score as number,
-  }));
+  const sources: ChatSource[] = buildSources(enhancedDocs);
 
   return { answer, sources };
 }
@@ -167,6 +191,7 @@ export async function chatStream(
   const enhancedDocs = await enhanceWithGraphContext(docs);
 
   const context = buildContext(enhancedDocs);
+  console.log("🚀 ~ chatStream ~ context:", context)
 
   const chain = prompt.pipe(llm).pipe(new StringOutputParser());
   const stream = await chain.stream({ context, question: req.question });
@@ -175,11 +200,5 @@ export async function chatStream(
     onChunk(chunk);
   }
 
-  return docs.map((d) => ({
-    documentId: d.metadata.documentId as string,
-    fileName: d.metadata.fileName as string,
-    chunkIndex: d.metadata.chunkIndex as number,
-    content: d.pageContent,
-    score: d.metadata._score as number,
-  }));
+  return buildSources(enhancedDocs);
 }

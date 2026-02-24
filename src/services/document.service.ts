@@ -141,6 +141,46 @@ export async function uploadDocument(
     console.error("Graph similarity error (non-blocking):", err);
   }
 
+  // Link chunks to existing Table nodes by matching table names in chunk text
+  try {
+    const allTables = await runQuery<{ name: string; displayName: string }>(
+      `MATCH (t:Table) RETURN t.name AS name, t.displayName AS displayName`,
+    );
+    if (allTables.length > 0) {
+      const matchedTableNames = new Set<string>();
+      for (const chunk of chunkData) {
+        const textLower = chunk.text.toLowerCase();
+        for (const table of allTables) {
+          if (
+            textLower.includes(table.name) ||
+            textLower.includes(table.displayName.toLowerCase())
+          ) {
+            matchedTableNames.add(table.name);
+            await runQuery(
+              `MATCH (c:Chunk {chunkId: $chunkId})
+               MATCH (t:Table {name: $tableName})
+               MERGE (c)-[:MENTIONS_TABLE]->(t)`,
+              { chunkId: chunk.chunkId, tableName: table.name },
+            );
+          }
+        }
+      }
+      // Create HAS_TABLE for matched tables
+      if (matchedTableNames.size > 0) {
+        await runQuery(
+          `MATCH (d:Document {documentId: $documentId})
+           UNWIND $tableNames AS tn
+           MATCH (t:Table {name: tn})
+           MERGE (d)-[:HAS_TABLE]->(t)`,
+          { documentId, tableNames: [...matchedTableNames] },
+        );
+        console.log(`Linked document ${documentId} to ${matchedTableNames.size} tables: ${[...matchedTableNames].join(", ")}`);
+      }
+    }
+  } catch (err) {
+    console.error("Table linking error (non-blocking):", err);
+  }
+
   return meta;
 }
 
@@ -200,6 +240,15 @@ export async function listDocuments(userId?: string): Promise<DocumentMeta[]> {
 }
 
 export async function deleteDocument(documentId: string): Promise<void> {
+  // Remove table relationships only (keep Table nodes)
+  await runQuery(
+    `MATCH (d:Document {documentId: $documentId})-[ht:HAS_TABLE]->(t:Table)
+     OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)-[mt:MENTIONS_TABLE]->(t)
+     DELETE mt, ht`,
+    { documentId },
+  );
+
+  // Delete chunks and document
   await runQuery(
     `MATCH (d:Document {documentId: $documentId})
      OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)

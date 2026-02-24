@@ -43,6 +43,7 @@ export interface ChatSource {
   chunkIndex: number;
   content: string;
   score: number;
+  graphSource?: string;
 }
 
 export interface ModelInfo {

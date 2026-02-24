@@ -103,6 +103,11 @@ export async function initNeo4j(embeddingDimension?: number): Promise<void> {
       // May already exist
     }
 
+    // Table entity constraints
+    await session.run(
+      "CREATE CONSTRAINT table_name IF NOT EXISTS FOR (t:Table) REQUIRE t.name IS UNIQUE",
+    );
+
     console.log("Neo4j constraints and indexes ensured");
   } finally {
     await session.close();

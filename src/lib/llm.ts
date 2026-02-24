@@ -31,10 +31,13 @@ export const LLM_MODELS: Record<LLMProvider, { id: string; name: string }[]> = {
     { id: "gpt-4.1", name: "GPT-4.1" },
     { id: "gpt-4.1-mini", name: "GPT-4.1 Mini" },
     { id: "gpt-4.1-nano", name: "GPT-4.1 Nano" },
+    { id: "gpt-5.2-2025-12-11", name: "GPT-5.2 (2025-12-11)" },
   ],
   google: [
     { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash" },
     { id: "gemini-2.5-pro-preview-05-06", name: "Gemini 2.5 Pro" },
     { id: "gemini-2.5-flash-preview-05-20", name: "Gemini 2.5 Flash" },
+    { id: "gemini-3-flash-preview", name: "Gemini 3 Flash" },
+    { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro" },
   ],
 };
