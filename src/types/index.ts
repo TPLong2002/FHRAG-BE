@@ -1,4 +1,4 @@
-export type LLMProvider = "openai" | "google";
+export type LLMProvider = "openai" | "google" | "aistudio";
 export type EmbeddingProvider = "openai" | "google";
 
 export interface AccessControl {

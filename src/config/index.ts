@@ -6,6 +6,11 @@ export const config = {
   apiKeys: {
     openai: process.env.OPENAI_API_KEY || "",
     google: process.env.GOOGLE_API_KEY || "",
+    aistudio: process.env.AISTUDIO_API_KEY || "sk-placeholder",
+  },
+
+  aistudio: {
+    baseURL: process.env.AISTUDIO_BASE_URL || "http://localhost:2048/v1",
   },
 
   embedding: {

@@ -18,6 +18,15 @@ export function createLLM(provider: LLMProvider, model: string): BaseChatModel {
         model,
         streaming: true,
       });
+    case "aistudio":
+      return new ChatOpenAI({
+        apiKey: config.apiKeys.aistudio,
+        model,
+        streaming: true,
+        configuration: {
+          baseURL: config.aistudio.baseURL,
+        },
+      });
     default:
       throw new Error(`Unsupported LLM provider: ${provider}`);
   }
@@ -39,5 +48,12 @@ export const LLM_MODELS: Record<LLMProvider, { id: string; name: string }[]> = {
     { id: "gemini-2.5-flash-preview-05-20", name: "Gemini 2.5 Flash" },
     { id: "gemini-3-flash-preview", name: "Gemini 3 Flash" },
     { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro" },
+  ],
+  aistudio: [
+    { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash (AI Studio)" },
+    { id: "gemini-2.5-pro-preview-05-06", name: "Gemini 2.5 Pro (AI Studio)" },
+    { id: "gemini-2.5-flash-preview-05-20", name: "Gemini 2.5 Flash (AI Studio)" },
+    { id: "gemini-3-flash-preview", name: "Gemini 3 Flash (AI Studio)" },
+    { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro (AI Studio)" },
   ],
 };
