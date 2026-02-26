@@ -39,6 +39,7 @@ export async function uploadDocument(
   const chunks = splitDocs.map((d) => d.pageContent);
 
   // Embed all chunks
+  console.log("🚀 ~ uploadDocument ~ embeddingProvider, embeddingModel:", embeddingProvider, embeddingModel)
   const embeddings = createEmbeddings(embeddingProvider, embeddingModel);
   const vectors = await embeddings.embedDocuments(chunks);
 

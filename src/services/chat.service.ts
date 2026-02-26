@@ -173,6 +173,7 @@ export async function chatStream(
   req: ChatRequest,
   onChunk: (text: string) => void,
 ): Promise<ChatSource[]> {
+  console.log("🚀 ~ chatStream ~ config.embedding", config.embedding.defaultProvider, config.embedding.defaultModel)
   const embeddings = createEmbeddings(
     config.embedding.defaultProvider as EmbeddingProvider,
     config.embedding.defaultModel,

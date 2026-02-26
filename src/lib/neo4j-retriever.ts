@@ -25,7 +25,7 @@ export class Neo4jHybridRetriever extends BaseRetriever {
   private userId?: string;
 
   constructor(fields: Neo4jHybridRetrieverOptions) {
-    super(fields);
+    super();
     this.embeddings = fields.embeddings;
     this.k = fields.k ?? config.search.topK;
     this.documentIds = fields.documentIds;
