@@ -33,8 +33,8 @@ export const EMBEDDING_MODELS: Record<EmbeddingProvider, { id: string; name: str
     { id: "text-embedding-ada-002", name: "Ada 002 (1536d)" },
   ],
   google: [
-    { id: "text-embedding-004", name: "Text Embedding 004 (768d)" },
-    { id: "embedding-001", name: "Embedding 001 (768d)" },
+    // { id: "text-embedding-004", name: "Text Embedding 004 (768d)" },
+    // { id: "embedding-001", name: "Embedding 001 (768d)" },
     { id: "gemini-embedding-001", name: "Gemini Embedding 001 (3072d)" },
   ],
 };
