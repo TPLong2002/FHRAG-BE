@@ -1,6 +1,7 @@
 services:
   be-chatbot:
     image: tplong/be-chatbot:latest
+    platform: linux/amd64
     container_name: be-chatbot
     ports:
       - "${BE_PORT:-3001}:${BE_PORT:-3001}"
@@ -27,4 +28,4 @@ services:
 
 networks:
   app-net:
-    external: true
+    name: app-net
